@@ -1,5 +1,0 @@
-# Deployed with: CLOUDFLARE_ACCOUNT_ID=<the snappy.ai account> npx wrangler deploy  (from this folder)
-name = "snappy-download"
-main = "src/index.js"
-compatibility_date = "2026-11-01"
-routes = [{ pattern = "download.snappy.ai", custom_domain = true }]
