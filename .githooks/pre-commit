@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Runs .pre-commit-config.yaml through the pre-commit framework (https://pre-commit.com). Enable once per clone: git config core.hooksPath .githooks
+# This is the stub `pre-commit install` writes, kept in the repo because core.hooksPath points here.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if command -v pre-commit >/dev/null; then
+	exec pre-commit hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit --hook-dir "${HERE}" -- "$@"
+fi
+echo 'pre-commit not found: install it with pipx install pre-commit==4.7.0 (or uv tool install pre-commit==4.7.0)' >&2
+exit 1
