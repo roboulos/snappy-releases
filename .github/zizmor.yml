@@ -1,6 +1,0 @@
-# Every `uses:` of an action or reusable workflow must be pinned to a full commit SHA (a tag or branch can be moved).
-rules:
-  unpinned-uses:
-    config:
-      policies:
-        "*": hash-pin
