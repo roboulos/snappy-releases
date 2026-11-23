@@ -1,0 +1,25 @@
+name: snappy-releases-gate
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+concurrency:
+  group: snappy-releases-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  snappy-releases-gate:
+    name: snappy-releases-gate
+    # The check main's branch protection requires. Its stage is the ASD-STE100 gate for this repository's prose (README.md). scripts/ste-lint.sh fetches the linter at a pinned
+    # commit, checks its SHA-256 and runs its selftest first. This repository holds release files only and has no
+    # self-hosted runner, so the stage runs on a GitHub-hosted runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ASD-STE100 prose (ste-lint.py at danyuchn/asd-ste100-skill 65c8ab6e, every AGENTS.md, README.md and docs/**/*.md)
+        run: bash scripts/ste-lint.sh
