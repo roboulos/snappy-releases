@@ -1,0 +1,101 @@
+name: snappy-releases-gate
+# The gate of roboulos/snappy-releases: the checks snappy-lanes-gate runs (actionlint, zizmor, bash -n, ShellCheck, shfmt,
+# gitleaks, mergify config validate), at the same pins, plus the STE100 linter on every Markdown file and a check that the
+# tree holds release files only. Each tool is a published release at an exact version, downloaded from its GitHub release
+# and checked against the SHA-256 GitHub publishes for that asset before it runs.
+# GitHub-hosted runner: this repository is public, and GitHub's guidance is to use self-hosted runners with private
+# repositories only (any fork can open a pull request here). Nothing heavy runs: lint and a file listing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+concurrency:
+  group: snappy-releases-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  snappy-releases-gate:
+    name: snappy-releases-gate
+    # Ready pull requests, and the draft pull requests Mergify opens on its queue branches to test the merged result.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false || startsWith(github.head_ref, 'mergify/merge-queue/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Tools (published releases, SHA-256 checked)
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/tools"
+          mkdir -p "${tools}"
+          fetch() {
+            curl -fsSL --retry 3 -o "${tools}/$3" "$1"
+            echo "$2  ${tools}/$3" | sha256sum -c -
+          }
+          fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint.tar.gz
+          tar -xzf "${tools}/actionlint.tar.gz" -C "${tools}" actionlint
+          fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 shellcheck.tar.xz
+          tar -xJf "${tools}/shellcheck.tar.xz" -C "${tools}" --strip-components=1 shellcheck-v0.11.0/shellcheck
+          fetch https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 \
+            76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt
+          chmod +x "${tools}/shfmt"
+          fetch https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b zizmor.tar.gz
+          tar -xzf "${tools}/zizmor.tar.gz" -C "${tools}" zizmor
+          fetch https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks.tar.gz
+          tar -xzf "${tools}/gitleaks.tar.gz" -C "${tools}" gitleaks
+          # uv runs mergify-cli at its exact release (the version snappy-lanes-gate and .pre-commit-config.yaml pin).
+          fetch https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz \
+            a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5 uv.tar.gz
+          tar -xzf "${tools}/uv.tar.gz" -C "${tools}" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
+          # The ASD-STE100 linter (github.com/danyuchn/asd-ste100-skill, scripts/ste-lint.py) at a fixed commit.
+          fetch https://raw.githubusercontent.com/danyuchn/asd-ste100-skill/65c8ab6ef5fcb3619c8e6daca43e68627f3d7b4a/scripts/ste-lint.py \
+            66c454b94dea0f81334f36b222775b62b6ec24e25c0e62308f23c550ef3eaa3d ste-lint.py
+      - name: Release files only
+        # The repository holds release files only (README.md): the app's code lives in its source repository, and a
+        # release is published by snappy-swift's snappy-release workflow. Any other tracked path fails, so no code, script,
+        # Worker or binary can sit here outside every gate (the download.snappy.ai Worker was such a file, 22 Nov 2026).
+        run: |
+          set -euo pipefail
+          allowed='^(README\.md|\.mergify\.yml|\.pre-commit-config\.yaml|\.shellcheckrc|\.githooks/pre-commit|\.github/(zizmor|dependabot)\.yml|\.github/workflows/[a-z-]+\.yml)$'
+          if extra=$(git ls-files | grep -Ev "${allowed}"); then
+            printf 'not a release file (code belongs in its source repository):\n%s\n' "${extra}" >&2
+            exit 1
+          fi
+      - name: actionlint (workflows)
+        run: '"${RUNNER_TEMP}/tools/actionlint" -color -shellcheck "${RUNNER_TEMP}/tools/shellcheck"'
+      - name: zizmor (GitHub Actions pinned at full commit SHAs, .github/zizmor.yml)
+        run: '"${RUNNER_TEMP}/tools/zizmor" --offline --no-progress .'
+      - name: bash -n, ShellCheck 0.11.0 --enable=all, shfmt 3.14.1 -d
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/tools"
+          mapfile -t files < <("${tools}/shfmt" -f .)
+          ((${#files[@]} > 0)) || { echo 'no shell files found' >&2; exit 1; }
+          status=0
+          for f in "${files[@]}"; do
+            printf '== %s\n' "${f}"
+            bash -n "${f}" || status=1
+          done
+          "${tools}/shellcheck" --enable=all -x "${files[@]}" || status=1
+          "${tools}/shfmt" -d "${files[@]}" || status=1
+          exit "${status}"
+      - name: gitleaks (tree and history)
+        run: |
+          "${RUNNER_TEMP}/tools/gitleaks" dir --redact --verbose .
+          "${RUNNER_TEMP}/tools/gitleaks" git --redact --verbose .
+      - name: mergify config validate
+        run: '"${RUNNER_TEMP}/tools/uv" tool run --from mergify-cli==2026.11.17 mergify config validate -f .mergify.yml'
+      - name: STE100 linter (every Markdown file)
+        run: |
+          set -euo pipefail
+          mapfile -t docs < <(git ls-files '*.md')
+          python3 -I "${RUNNER_TEMP}/tools/ste-lint.py" "${docs[@]}"

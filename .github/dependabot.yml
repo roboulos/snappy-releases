@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # A release is not proposed until it is 7 days old (zizmor dependabot-cooldown).
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    labels: ["dependencies"]
+    groups:
+      actions:
+        patterns: ["*"]
