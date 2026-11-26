@@ -4,27 +4,29 @@
 # pull request's head and on Mergify's merge-queue draft pull requests. Every run must have passed (none failed, none pending).
 # Require `release-check` too (.github/workflows/release-check.yml, every pull request): nothing lands while what this
 # repository serves to users fails its check (roboulos/snappy-lanes#170).
-# A pull request queues when it is ready, both checks are green and it is not held (label hold): no label is needed. A pull
+# Require `handroll-review` too (.github/workflows/handroll-review.yml): the full-tree hand-roll check every Snappy
+# repository holds. A hand-written protocol, a skip marker or a new exemption does not land.
+# A pull request queues when it is ready, every required check is green and it is not held (label hold): no label is needed. A pull
 # request labelled `now` goes to the front.
 queue_rules:
   - name: default
     queue_conditions:
       - base=main
       - -draft
-      - check-success=snappy-releases-gate
-      - -check-failure=snappy-releases-gate
-      - -check-pending=snappy-releases-gate
-      - check-success=release-check
-      - -check-failure=release-check
-      - -check-pending=release-check
+      # The required checks, written once (a YAML anchor) and named again for the merge-queue draft below.
+      - and: &required-checks
+          - check-success=snappy-releases-gate
+          - -check-failure=snappy-releases-gate
+          - -check-pending=snappy-releases-gate
+          - check-success=release-check
+          - -check-failure=release-check
+          - -check-pending=release-check
+          - check-success=handroll-review
+          - -check-failure=handroll-review
+          - -check-pending=handroll-review
       - -label=hold
     merge_conditions:
-      - check-success=snappy-releases-gate
-      - -check-failure=snappy-releases-gate
-      - -check-pending=snappy-releases-gate
-      - check-success=release-check
-      - -check-failure=release-check
-      - -check-pending=release-check
+      - and: *required-checks
     merge_method: squash
     # The squash commit on main reads the pull request's own title and body, never its first commit's message.
     commit_message_format:
@@ -67,7 +69,7 @@ pull_request_rules:
       comment:
         message: >-
           This pull request conflicts with main, so the merge queue cannot take it. Merge origin/main into the branch
-          (a merge, never a rebase), resolve, and push; the queue takes it once `snappy-releases-gate` and `release-check` are green.
+          (a merge, never a rebase), resolve, and push; the queue takes it once `snappy-releases-gate`, `release-check` and `handroll-review` are green.
 
   - name: flag a pull request whose gate is red
     conditions:
@@ -77,6 +79,7 @@ pull_request_rules:
       - or:
           - check-failure=snappy-releases-gate
           - check-failure=release-check
+          - check-failure=handroll-review
     actions:
       label:
         toggle:
