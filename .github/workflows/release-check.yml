@@ -3,7 +3,8 @@ name: release-check
 # release's Snappy-<version>.zip against its .sha256 file and GitHub's own asset digest, Snappy.zip as the same bytes,
 # appcast.xml as the feed the app reads (Sparkle 2: version, URL, length and the EdDSA signature against the public key
 # the app carries), the app's Info.plist inside the zip, and the public download link. Runs when a release is published,
-# every day, and on a change to this file.
+# every day, on every pull request (the merge queue requires it, so it has no path filter: a filtered required check never
+# reports and the pull request waits forever), and on a push to main that changes this file.
 on:
   release:
     types: [published]
@@ -11,7 +12,6 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
   pull_request:
-    paths: [.github/workflows/release-check.yml]
   push:
     branches: [main]
     paths: [.github/workflows/release-check.yml]
