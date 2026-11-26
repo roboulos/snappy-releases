@@ -110,6 +110,8 @@ jobs:
           done
           grep -Fq "mergify-cli==${MERGIFY_CLI}" .pre-commit-config.yaml || { echo ".pre-commit-config.yaml does not pin mergify-cli==${MERGIFY_CLI}" >&2; status=1; }
           exit "${status}"
+      - name: The commit hook's hand-roll check passes this tree (.pre-commit-config.yaml)
+        run: uv tool run --from pre-commit==4.7.0 pre-commit run handroll-tree --all-files
       - name: actionlint (workflows)
         run: '"${RUNNER_TEMP}/tools/actionlint" -color -shellcheck "${RUNNER_TEMP}/tools/shellcheck"'
       - name: zizmor (snappy-swift G-40 threshold; uses pinned at full commit SHAs)
