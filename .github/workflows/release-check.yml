@@ -5,6 +5,9 @@ name: release-check
 # the app carries), the app's Info.plist inside the zip, and the public download link. Runs when a release is published,
 # every day, on every pull request (the merge queue requires it, so it has no path filter: a filtered required check never
 # reports and the pull request waits forever), and on a push to main that changes this file.
+# This check runs after publication. release-gate (release-gate.yml) checks a pre-release on a Mac before it becomes latest.
+# A failure outside a pull request alerts a person: the alert job opens an issue assigned to the repository owner, or
+# comments on the one already open.
 on:
   release:
     types: [published]
@@ -137,3 +140,29 @@ jobs:
 
           sys.exit(1 if faults else 0)
           PY
+  alert:
+    name: alert
+    needs: release-check
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write # opens or comments on the alert issue
+    steps:
+      - name: Open or update the alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="release-check failed: what Snappy releases serve needs a person"
+          body="@${OWNER} release-check failed. Run: ${RUN_URL}"
+          number=$(gh issue list -R "${REPO}" --state open --limit 200 --json number,title \
+            | jq -r --arg title "${title}" '[.[] | select(.title == $title) | .number][0] // empty')
+          if [[ -n ${number} ]]; then
+            gh issue comment "${number}" -R "${REPO}" --body "${body}"
+          else
+            gh issue create -R "${REPO}" --title "${title}" --body "${body}" --assignee "${OWNER}"
+          fi

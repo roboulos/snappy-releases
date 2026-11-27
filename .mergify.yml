@@ -6,14 +6,16 @@
 # repository serves to users fails its check (roboulos/snappy-lanes#170).
 # Require `handroll-review` too (.github/workflows/handroll-review.yml): the full-tree hand-roll check every Snappy
 # repository holds. A hand-written protocol, a skip marker or a new exemption does not land.
+# Require `release-gate` too (.github/workflows/release-gate.yml, every pull request): the latest release passes its Mac
+# signature check and live smoke, and the two planted archives are refused (roboulos/snappy-releases#11).
 # A pull request queues when it is ready, every required check is green and it is not held (label hold): no label is needed. A pull
 # request labelled `now` goes to the front.
 queue_rules:
   - name: default
-    queue_conditions:
+    queue_conditions: &queue-and-merge
       - base=main
       - -draft
-      # The required checks, written once (a YAML anchor) and named again for the merge-queue draft below.
+      # The required checks, written once (a YAML anchor) and named again for merge_conditions below.
       - and: &required-checks
           - check-success=snappy-releases-gate
           - -check-failure=snappy-releases-gate
@@ -24,9 +26,11 @@ queue_rules:
           - check-success=handroll-review
           - -check-failure=handroll-review
           - -check-pending=handroll-review
+          - check-success=release-gate
+          - -check-failure=release-gate
+          - -check-pending=release-gate
       - -label=hold
-    merge_conditions:
-      - and: *required-checks
+    merge_conditions: *queue-and-merge
     merge_method: squash
     # The squash commit on main reads the pull request's own title and body, never its first commit's message.
     commit_message_format:
@@ -35,9 +39,8 @@ queue_rules:
     update_method: merge
     # A draft whose runner dies must not wait forever (snappy-lanes: 45 m, about 3x its slowest green queue check).
     checks_timeout: 45 m
-    batch_size:
-      min: 1
-      max: 2
+    batch_size: 1
+    max_checks_retries: 0
 
 priority_rules:
   - name: fix-main
@@ -55,6 +58,12 @@ priority_rules:
     priority: low
 
 pull_request_rules:
+  - name: queue a ready pull request whose gate is green
+    conditions: *queue-and-merge
+    actions:
+      queue:
+        name: default
+
   # A pull request the queue cannot take must not sit unseen. The label toggles: it goes on while the condition holds and
   # comes off by itself once it is fixed. The same rules as snappy-lanes'.
   - name: flag a pull request that conflicts with main
@@ -69,7 +78,7 @@ pull_request_rules:
       comment:
         message: >-
           This pull request conflicts with main, so the merge queue cannot take it. Merge origin/main into the branch
-          (a merge, never a rebase), resolve, and push; the queue takes it once `snappy-releases-gate`, `release-check` and `handroll-review` are green.
+          (a merge, never a rebase), resolve, and push; the queue takes it once `snappy-releases-gate`, `release-check`, `handroll-review` and `release-gate` are green.
 
   - name: flag a pull request whose gate is red
     conditions:
@@ -80,14 +89,16 @@ pull_request_rules:
           - check-failure=snappy-releases-gate
           - check-failure=release-check
           - check-failure=handroll-review
+          - check-failure=release-gate
     actions:
       label:
         toggle:
           - gate-red
 
 merge_queue:
-  # A later batch's pass stands in for an earlier batch it was tested on top of (docs: merge-queue/batches).
-  skip_intermediate_results: true
+  # In-place serial mode matches main's GitHub branch protection ("Require branches to be up to date before merging").
+  mode: serial
+  max_parallel_checks: 1
 
 merge_protections_settings:
   auto_merge_conditions: true
