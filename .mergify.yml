@@ -33,7 +33,7 @@ queue_rules:
           - -check-pending=release-gate
       - -label=hold
     merge_conditions: *queue-and-merge
-    merge_method: squash
+    merge_method: fast-forward
     # The squash commit on main reads the pull request's own title and body, never its first commit's message.
     commit_message_format:
       title: pr-title
