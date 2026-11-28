@@ -11,8 +11,9 @@ name: snappy-releases-gate
 on:
   push:
     branches: [main]
+  # edited: a new title or body runs the gate again. A re-run of an old run reads that run's old title and body.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 concurrency:
   group: snappy-releases-gate-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
@@ -116,7 +117,8 @@ jobs:
         # That is before the release is built, notarized and checked live on a Mac (roboulos/snappy-releases#13).
         # The grammar is GitHub's: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, then #N,
         # owner/repo#N or an issue URL. Mergify's merge queue drafts carry its own body and the commits already checked
-        # here. Dependabot names upstream issues only. The "Refs only" merge protection in .mergify.yml re-reads an edited body.
+        # here. Dependabot names upstream issues only. An edited title or body runs this step again (on: edited).
+        # The "Refs only" merge protection in .mergify.yml also re-reads the live title and body.
         if: >-
           github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') &&
           github.event.pull_request.user.login != 'dependabot[bot]'
