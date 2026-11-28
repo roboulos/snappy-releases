@@ -1,38 +1,30 @@
 name: release-gate
-# Opens the published archive on a Mac before it becomes latest (roboulos/snappy-releases#11). A release published as a
-# pre-release stays out of releases/latest, so neither the download link nor the appcast serves it. This workflow downloads
-# the uploaded Snappy-<version>.zip, checks its signature and notarization, starts its daemon twice and its app once, and
-# only then marks the release latest. The source repository's snappy-release workflow must publish with --prerelease: a
-# release it publishes as latest is already served before this runs.
-# Every pull request runs the same checks against the latest release (the merge queue requires release-gate, so it has no
-# path filter), with two planted archives that must be refused.
-# A failure outside a pull request opens an issue assigned to the repository owner.
-# The daemon lifecycle follows `headless` in roboulos/snappy-lanes' scripts/stranger-path.sh. That repository is private
-# and this one is public, so the workflow cannot fetch the script, and no secret is added here for it.
+# Check a pre-release on Mac before it becomes latest.
+# Verify signature, notarization, and daemon launch.
 on:
   release:
     types: [prereleased]
   workflow_dispatch:
     inputs:
       tag:
-        description: Pre-release to check and promote, for example v1.2.3 (empty checks the latest release)
+        description: Pre-release to check (empty checks the latest)
         required: false
         type: string
   pull_request:
 concurrency:
-  group: release-gate-${{ github.event.pull_request.number || github.event.release.tag_name || inputs.tag || github.ref }}
-  # A promotion is never cancelled half way.
+  group: >-
+    release-gate-${{ github.event.pull_request.number
+    || github.event.release.tag_name || inputs.tag
+    || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 env:
   REPO: ${{ github.repository }}
-  # One line that names every uploaded asset and GitHub's digest of it. Promotion requires the line the check read.
   DIGESTS_QUERY: '[.assets[] | "\(.name)=\(.digest)"] | sort | join(" ")'
 jobs:
   release-gate:
     name: release-gate
-    # Snappy is an arm64 app: GitHub's Apple silicon runner.
     runs-on: macos-26
     timeout-minutes: 30
     outputs:
@@ -47,213 +39,152 @@ jobs:
         run: |
           set -euo pipefail
           tag="${ASKED}"
-          if [[ -z ${tag} ]]; then tag=$(gh release view -R "${REPO}" --json tagName --jq .tagName); fi
-          [[ ${tag} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vMAJOR.MINOR.PATCH" >&2; exit 1; }
+          if [[ -z ${tag} ]]; then
+            tag=$(gh release view -R "${REPO}" --json tagName --jq .tagName)
+          fi
+          re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          [[ ${tag} =~ ${re} ]] || { echo "vMAJOR.MINOR.PATCH" >&2; exit 1; }
           name="Snappy-${tag#v}.zip"
           gh release download "${tag}" -R "${REPO}" -p "${name}" -D "${RUNNER_TEMP}/uploaded"
           digests=$(gh api "repos/${REPO}/releases/tags/${tag}" --jq "${DIGESTS_QUERY}")
           sum=$(shasum -a 256 "${RUNNER_TEMP}/uploaded/${name}" | cut -d' ' -f1)
-          # The download link serves Snappy.zip, so it must be the bytes that are checked here.
           for asset in "${name}" Snappy.zip; do
-            [[ " ${digests} " == *" ${asset}=sha256:${sum} "* ]] || { echo "${asset} is not the downloaded bytes (${sum})" >&2; exit 1; }
+            want="${asset}=sha256:${sum}"
+            [[ " ${digests} " == *" ${want} "* ]] || { echo "${asset}" >&2; exit 1; }
           done
           printf 'tag=%s\ndigests=%s\n' "${tag}" "${digests}" >> "${GITHUB_OUTPUT}"
           printf 'ARCHIVE=%s\n' "${RUNNER_TEMP}/uploaded/${name}" >> "${GITHUB_ENV}"
-      - name: Signature and live smoke, on the upload and on two planted archives
-        # No token is in this step: it runs the downloaded app.
+      - name: Signature and live smoke
         env:
-          # The Developer ID team that signs every Snappy (TeamIdentifier of release v1.0.6).
           TEAM: 7GZM62ZFML
           PORT: "39117"
         run: |
           set -euo pipefail
           work=$(mktemp -d "${RUNNER_TEMP}/gate.XXXXXX")
-          daemon_pid=''
-          app_pid=''
-
-          stop() {
-            [[ -n $1 ]] || return 0
-            kill "$1" 2>/dev/null || true
-            wait "$1" 2>/dev/null || true
-          }
+          daemon_pid='' app_pid=''
+          stop() { [[ -n $1 ]] || return 0
+            kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
           trap 'stop "${app_pid}"; stop "${daemon_pid}"' EXIT
-
-          # Succeeds when the process given as its argument has an ordinary window on screen.
           swiftc -o "${work}/has-window" - <<'SWIFT'
           import CoreGraphics
-
           let pid = Int(CommandLine.arguments[1])!
-          let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-          let found = windows.contains {
-              $0[kCGWindowOwnerPID as String] as? Int == pid && $0[kCGWindowLayer as String] as? Int == 0
+          let w = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly], kCGNullWindowID
+          ) as? [[String: Any]] ?? []
+          let found = w.contains {
+            $0[kCGWindowOwnerPID as String] as? Int == pid
+            && $0[kCGWindowLayer as String] as? Int == 0
           }
           exit(found ? 0 : 1)
           SWIFT
-
-          # The first gate. Each command is chained, because errexit is off inside a function that a condition calls.
-          # spctl and stapler take bundles only: the daemon is a bare executable inside the app, so Apple's notarization
-          # requirement is what proves it (codesign --check-notarization).
-          # The source line is required too: with assessment turned off, spctl accepts anything.
+          ours="=anchor apple generic and certificate leaf[subject.OU] = \"${TEAM}\""
           signature() {
-            local app=$1 ours="=anchor apple generic and certificate leaf[subject.OU] = \"${TEAM}\"" assessed
+            local app=$1 assessed
             codesign --verify --deep --strict --verbose=2 -R "${ours}" "${app}" &&
               assessed=$(spctl --assess --type execute --verbose=4 "${app}" 2>&1) &&
               printf '%s\n' "${assessed}" &&
               grep -Fxq 'source=Notarized Developer ID' <<< "${assessed}" &&
               xcrun stapler validate "${app}" &&
-              codesign --verify --deep --strict --verbose=2 -R "${ours}" "${app}/Contents/MacOS/snappyd" &&
-              codesign --verify --strict --check-notarization -R "=notarized" --verbose=2 "${app}/Contents/MacOS/snappyd"
+              codesign --verify --deep --strict --verbose=2 \
+                -R "${ours}" "${app}/Contents/MacOS/snappyd" &&
+              codesign --verify --strict --check-notarization \
+                -R "=notarized" --verbose=2 "${app}/Contents/MacOS/snappyd"
           }
-
-          # Starts the app's daemon in the given home, then waits until it has loaded and answers /health as this process,
-          # with the revision the app is paired with.
           daemon_answers() {
-            local app=$1 home=$2 revision=$3 token="$2/.snappy-skills/daemon.token" health=''
+            local app=$1 home=$2 rev=$3 health=''
+            local tok="${home}/.snappy-skills/daemon.token"
+            local addr="${home}/.snappy-skills/daemon.addr"
             env -i HOME="${home}" TMPDIR="${home}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-              "${app}/Contents/MacOS/snappyd" --listen "127.0.0.1:${PORT}" --token-file "${token}" \
-              --address-file "${home}/.snappy-skills/daemon.addr" --profile desktop > "${home}/snappyd.log" 2>&1 &
+              "${app}/Contents/MacOS/snappyd" --listen "127.0.0.1:${PORT}" \
+              --token-file "${tok}" --address-file "${addr}" --profile desktop \
+              > "${home}/snappyd.log" 2>&1 &
             daemon_pid=$!
-            for ((try = 0; try < 300; try++)); do
+            for ((try=0; try<300; try++)); do
               kill -0 "${daemon_pid}" 2>/dev/null || break
-              if [[ -s ${token} ]] &&
-                health=$(curl -fsS -m 2 -H "Authorization: Bearer $(< "${token}")" "http://127.0.0.1:${PORT}/health" 2>/dev/null) &&
-                jq -e --argjson pid "${daemon_pid}" --arg revision "${revision}" \
-                  '.ok == true and .pid == $pid and .revision == $revision and (has("loading") | not)' <<< "${health}" > /dev/null; then
-                echo "ok   snappyd ${daemon_pid} answers /health with revision ${revision}"
+              if [[ -s ${tok} ]] &&
+                health=$(curl -fsS -m 2 -H "Authorization: Bearer $(< "${tok}")" \
+                  "http://127.0.0.1:${PORT}/health" 2>/dev/null) &&
+                jq -e --argjson pid "${daemon_pid}" --arg revision "${rev}" \
+                  '.ok and .pid == $pid and .revision == $revision
+                  and (has("loading") | not)' <<< "${health}" > /dev/null
+              then
+                echo "ok snappyd ${daemon_pid}"
                 return 0
               fi
               sleep 0.2
             done
-            echo "FAIL snappyd did not answer /health with revision ${revision}. Last answer: ${health}"
+            echo "FAIL snappyd" >&2
             tail -n 40 "${home}/snappyd.log"
             return 1
           }
-
           first_window() {
             local app=$1 home=$2
-            env -i HOME="${home}" CFFIXED_USER_HOME="${home}" TMPDIR="${home}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-              USER="${USER}" LOGNAME="${USER}" "${app}/Contents/MacOS/Snappy" > "${home}/app.log" 2>&1 &
+            env -i HOME="${home}" CFFIXED_USER_HOME="${home}" \
+              TMPDIR="${home}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+              USER="${USER}" LOGNAME="${USER}" \
+              "${app}/Contents/MacOS/Snappy" > "${home}/app.log" 2>&1 &
             app_pid=$!
-            for ((try = 0; try < 60; try++)); do
+            for ((try=0; try<60; try++)); do
               kill -0 "${app_pid}" 2>/dev/null || break
               if "${work}/has-window" "${app_pid}"; then
-                echo "ok   Snappy ${app_pid} opened a window"
+                echo "ok Snappy ${app_pid}"
                 return 0
               fi
               sleep 1
             done
-            echo "FAIL Snappy opened no window"
+            echo "FAIL no window" >&2
             tail -n 40 "${home}/app.log"
             return 1
           }
-
-          # The second gate: an isolated home, the daemon, one restart, and the app's first window.
           smoke() {
-            local app=$1 home revision status=0
-            home=$(mktemp -d "${work}/home.XXXXXX") && mkdir "${home}/.snappy-skills" &&
-              revision=$(plutil -extract SnappyPairedDaemonRevision raw -o - "${app}/Contents/Info.plist") || return 1
-            if daemon_answers "${app}" "${home}" "${revision}"; then
+            local app=$1 home rev status=0
+            home=$(mktemp -d "${work}/home.XXXXXX")
+            mkdir "${home}/.snappy-skills"
+            rev=$(plutil -extract SnappyPairedDaemonRevision raw \
+              -o - "${app}/Contents/Info.plist") || return 1
+            if daemon_answers "${app}" "${home}" "${rev}"; then
               stop "${daemon_pid}"
-              daemon_answers "${app}" "${home}" "${revision}" && first_window "${app}" "${home}" || status=1
+              daemon_answers "${app}" "${home}" "${rev}" &&
+                first_window "${app}" "${home}" || status=1
             else
               status=1
             fi
-            stop "${app_pid}"
-            stop "${daemon_pid}"
-            app_pid=''
-            daemon_pid=''
+            stop "${app_pid}"; stop "${daemon_pid}"
+            app_pid='' daemon_pid=''
             return "${status}"
           }
-
           unpack() {
-            local folder
-            folder=$(mktemp -d "${work}/unpacked.XXXXXX") &&
-              ditto -x -k "$1" "${folder}" &&
-              printf '%s\n' "${folder}/Snappy.app"
+            local d; d=$(mktemp -d "${work}/unpacked.XXXXXX")
+            ditto -x -k "$1" "${d}"; printf '%s\n' "${d}/Snappy.app"
           }
-
-          # Unpacks an archive into an empty folder, runs both gates and sets refused to the names of those that refuse it.
+          pack() { ditto -c -k --sequesterRsrc --keepParent "$1" "$2"; }
           gates() {
-            local app gate
             echo "== ${1##*/}"
-            app=$(unpack "$1")
-            refused=''
+            local app; app=$(unpack "$1"); refused=''
             for gate in signature smoke; do
-              "${gate}" "${app}" || refused="${refused} ${gate}"
+              "${gate}" "${app}" || refused+=" ${gate}"
             done
-            echo "${1##*/} refused by:${refused:- none}"
+            echo "${1##*/}:${refused:- none}"
           }
-
-          # A planted archive must be refused by the gate it was planted for: removing that gate fails this step.
           must_refuse() {
             gates "$2"
-            [[ "${refused} " == *" $1 "* ]] || { echo "the $1 gate did not refuse ${2##*/}" >&2; exit 1; }
+            [[ " ${refused} " == *" $1 "* ]] || { echo "$1: ${2##*/}" >&2; exit 1; }
           }
-
-          pack() {
-            ditto -c -k --sequesterRsrc --keepParent "$1" "$2"
-          }
-
           gates "${ARCHIVE}"
           [[ -z ${refused} ]] || { echo "refused:${refused}" >&2; exit 1; }
-
-          # Planted: one byte changed inside the app after stapling.
           app=$(unpack "${ARCHIVE}")
           target="${app}/Contents/Resources/McpAppsHost/host.js"
           cp "${target}" "${work}/original"
-          perl -e 'open my $f, "+<", $ARGV[0] or die; read $f, my $b, 1; seek $f, 0, 0; print {$f} chr(ord($b) ^ 1)' "${target}"
-          changed=$({ cmp -l "${work}/original" "${target}" || true; } | wc -l)
-          ((changed == 1)) || { echo "planted ${changed} changed bytes, not 1" >&2; exit 1; }
+          perl -e '
+            open my $f, "+<", $ARGV[0] or die;
+            read $f, my $b, 1; seek $f, 0, 0;
+            print {$f} chr(ord($b) ^ 1)
+          ' "${target}"
+          n=$({ cmp -l "${work}/original" "${target}" || true; } | wc -l)
+          ((n == 1)) || { echo "${n} bytes not 1" >&2; exit 1; }
           pack "${app}" "${work}/one-byte.zip"
           must_refuse signature "${work}/one-byte.zip"
-
-          # Planted: a daemon that exits at start.
           app=$(unpack "${ARCHIVE}")
           printf '#!/bin/sh\nexit 1\n' > "${app}/Contents/MacOS/snappyd"
           pack "${app}" "${work}/daemon-exits.zip"
           must_refuse smoke "${work}/daemon-exits.zip"
-  promote:
-    name: promote
-    needs: release-gate
-    # A published pre-release, or a tag a person names on main. Never a pull request.
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write # marks the checked pre-release as the latest release
-      actions: write # starts release-check, because an edit by the workflow token starts no workflow
-    steps:
-      - name: Mark the checked pre-release latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-gate.outputs.tag }}
-          CHECKED: ${{ needs.release-gate.outputs.digests }}
-        run: |
-          set -euo pipefail
-          pre=$(gh release view "${TAG}" -R "${REPO}" --json isPrerelease --jq .isPrerelease)
-          if [[ ${pre} != true ]]; then echo "${TAG} is not a pre-release: nothing to promote"; exit 0; fi
-          latest=$(gh release view -R "${REPO}" --json tagName --jq .tagName)
-          newest=$(printf '%s\n' "${latest}" "${TAG}" | sort -V | tail -n 1)
-          [[ ${newest} == "${TAG}" ]] || { echo "${TAG} is older than the latest release ${latest}" >&2; exit 1; }
-          now=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq "${DIGESTS_QUERY}")
-          [[ ${now} == "${CHECKED}" ]] || { echo "the assets of ${TAG} changed after the check" >&2; exit 1; }
-          gh release edit "${TAG}" -R "${REPO}" --prerelease=false --latest
-          gh workflow run release-check.yml -R "${REPO}" --ref main
-  alert:
-    name: alert
-    needs: [release-gate, promote]
-    if: failure() && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      issues: write # opens the alert issue
-    steps:
-      - name: Open an issue for the release that was not promoted
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OWNER: ${{ github.repository_owner }}
-          ASKED: ${{ github.event.release.tag_name || inputs.tag }}
-          RUN: ${{ github.run_id }}
-        run: >-
-          gh issue create -R "${REPO}" --assignee "${OWNER}" --title "release-gate failed: ${ASKED:-latest} needs a person"
-          --body "@${OWNER} release-gate did not pass. Run: https://github.com/${REPO}/actions/runs/${RUN}"

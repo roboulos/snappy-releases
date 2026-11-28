@@ -1,13 +1,7 @@
 name: release-check
-# Checks what this repository serves to users, after snappy-swift's snappy-release workflow publishes it: the latest
-# release's Snappy-<version>.zip against its .sha256 file and GitHub's own asset digest, Snappy.zip as the same bytes,
-# appcast.xml as the feed the app reads (Sparkle 2: version, URL, length and the EdDSA signature against the public key
-# the app carries), the app's Info.plist inside the zip, and the public download link. Runs when a release is published,
-# every day, on every pull request (the merge queue requires it, so it has no path filter: a filtered required check never
-# reports and the pull request waits forever), and on a push to main that changes this file.
-# This check runs after publication. release-gate (release-gate.yml) checks a pre-release on a Mac before it becomes latest.
-# A failure outside a pull request alerts a person: the alert job opens an issue assigned to the repository owner, or
-# comments on the one already open.
+# Checks what this repository serves to users after snappy-swift publishes a release:
+# SHA-256 digests, GitHub asset digests, Sparkle 2 EdDSA signature, appcast.xml feed,
+# Info.plist, the public download link, and every historical enclosure URL.
 on:
   release:
     types: [published]
@@ -31,12 +25,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      # The Sparkle EdDSA public key every shipped Snappy carries (SUPublicEDKey in Snappy.app's Info.plist, release v1.0.0).
-      # Pinned here so a release signed with any other key fails: the app would refuse that update.
       SPARKLE_PUBLIC_KEY: ReJxRjP2wnAv9vOzLPn7RAldkN9osfdLUxc0msqdDXA=
-      # SUFeedURL in the app's Info.plist (snappy-swift snappy-release.yml SNAPPY_FEED_URL).
       FEED_URL: https://github.com/roboulos/snappy-releases/releases/latest/download/appcast.xml
-      # The download link README.md gives.
       DOWNLOAD_URL: https://snappy.ai/download
     steps:
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
@@ -48,50 +38,46 @@ jobs:
         run: |
           set -euo pipefail
           work="${RUNNER_TEMP}/release"
-          mkdir -p "${work}"
-          cd "${work}"
+          mkdir -p "${work}" && cd "${work}"
           tag=$(gh release view -R "${REPO}" --json tagName --jq .tagName)
           version="${tag#v}"
           printf 'TAG=%s\nVERSION=%s\n' "${tag}" "${version}" >> "${GITHUB_ENV}"
-          gh release download "${tag}" -R "${REPO}" -p "Snappy-${version}.zip" -p "Snappy-${version}.zip.sha256" -p appcast.xml
+          gh release download "${tag}" -R "${REPO}" \
+            -p "Snappy-${version}.zip" -p "Snappy-${version}.zip.sha256" -p appcast.xml
           sha256sum -c "Snappy-${version}.zip.sha256"
           want="sha256:$(cut -d' ' -f1 "Snappy-${version}.zip.sha256")"
-          digests=$(gh api "repos/${REPO}/releases/tags/${tag}" --jq '.assets[] | "\(.name) \(.digest)"')
+          digests=$(gh api "repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name) \(.digest)"')
           for name in "Snappy-${version}.zip" Snappy.zip; do
-            grep -Fxq "${name} ${want}" <<< "${digests}" || { echo "${name}: GitHub's digest is not ${want}" >&2; exit 1; }
+            grep -Fxq "${name} ${want}" <<< "${digests}" \
+              || { echo "${name}: not ${want}" >&2; exit 1; }
           done
-          # The feed the app reads is this release's appcast.xml.
           curl -fsSL --retry 3 "${FEED_URL}" | cmp - appcast.xml
       - name: Public download link ends at the latest Snappy.zip
         run: |
           set -euo pipefail
           headers="${RUNNER_TEMP}/download-headers"
-          code=$(curl -sS -L --retry 3 -o /dev/null -D "${headers}" -w '%{http_code}' "${DOWNLOAD_URL}")
-          [[ ${code} == 200 ]] || { echo "${DOWNLOAD_URL} answers HTTP ${code}" >&2; exit 1; }
+          code=$(curl -sS -L --retry 3 -o /dev/null -D "${headers}" \
+            -w '%{http_code}' "${DOWNLOAD_URL}")
+          [[ ${code} == 200 ]] || { echo "${DOWNLOAD_URL} HTTP ${code}" >&2; exit 1; }
           hops=$(tr -d '\r' < "${headers}" | sed -n 's/^[Ll]ocation: //p')
           printf '%s\n' "${hops}"
-          for want in "https://github.com/${REPO}/releases/latest/download/Snappy.zip" "https://github.com/${REPO}/releases/download/${TAG}/Snappy.zip"; do
-            grep -Fxq "${want}" <<< "${hops}" || { echo "${DOWNLOAD_URL} does not pass through ${want}" >&2; exit 1; }
+          latest="https://github.com/${REPO}/releases/latest/download/Snappy.zip"
+          tagged="https://github.com/${REPO}/releases/download/${TAG}/Snappy.zip"
+          for want in "${latest}" "${tagged}"; do
+            grep -Fxq "${want}" <<< "${hops}" \
+              || { echo "not through ${want}" >&2; exit 1; }
           done
       - name: Appcast and app (Sparkle EdDSA signature, Info.plist, stapled ticket)
         working-directory: ${{ runner.temp }}/release
         run: |
           set -euo pipefail
           uv run --quiet --no-project --with 'cryptography==50.0.2' python - <<'PY'
-          """The appcast's newest item and the app it points at, checked as Sparkle 2 checks them before it installs."""
-
-          import base64
-          import os
-          import plistlib
-          import sys
-          import urllib.request
-          import xml.etree.ElementTree as ET
-          import zipfile
-
+          import base64, os, plistlib, sys, urllib.request, xml.etree.ElementTree as ET, zipfile
           from cryptography.exceptions import InvalidSignature
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-          SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+          NS = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
           repo, tag, version = os.environ["REPO"], os.environ["TAG"], os.environ["VERSION"]
           key, feed = os.environ["SPARKLE_PUBLIC_KEY"], os.environ["FEED_URL"]
           archive = f"Snappy-{version}.zip"
@@ -103,7 +89,7 @@ jobs:
                   faults.append(what)
 
           items = ET.parse("appcast.xml").getroot().findall("channel/item")
-          newest = [item for item in items if item.findtext(f"{SPARKLE}shortVersionString") == version]
+          newest = [i for i in items if i.findtext(f"{NS}shortVersionString") == version]
           check(len(newest) == 1, f"appcast.xml has one item for {version}")
           if not newest:
               sys.exit(1)
@@ -111,10 +97,12 @@ jobs:
           enclosure = item.find("enclosure")
           url = f"https://github.com/{repo}/releases/download/{tag}/{archive}"
           check(enclosure.get("url") == url, f"enclosure url is {url}")
-          check(enclosure.get("length") == str(os.path.getsize(archive)), "enclosure length is the archive's size")
-          signature = base64.b64decode(enclosure.get(f"{SPARKLE}edSignature", ""))
+          check(enclosure.get("length") == str(os.path.getsize(archive)),
+                "enclosure length is the archive's size")
+          sig = base64.b64decode(enclosure.get(f"{NS}edSignature", ""))
           try:
-              Ed25519PublicKey.from_public_bytes(base64.b64decode(key)).verify(signature, open(archive, "rb").read())
+              pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(key))
+              pub.verify(sig, open(archive, "rb").read())
               check(True, "edSignature verifies against the pinned Sparkle public key")
           except (InvalidSignature, ValueError):
               check(False, "edSignature verifies against the pinned Sparkle public key")
@@ -122,19 +110,22 @@ jobs:
           with zipfile.ZipFile(archive) as app:
               names = set(app.namelist())
               info = plistlib.loads(app.read("Snappy.app/Contents/Info.plist"))
-          check(info.get("CFBundleShortVersionString") == version, f"Info.plist CFBundleShortVersionString is {version}")
-          check(info.get("CFBundleVersion") == item.findtext(f"{SPARKLE}version"), "Info.plist CFBundleVersion is the appcast's sparkle:version")
+          check(info.get("CFBundleShortVersionString") == version,
+                f"Info.plist CFBundleShortVersionString is {version}")
+          check(info.get("CFBundleVersion") == item.findtext(f"{NS}version"),
+                "Info.plist CFBundleVersion is the appcast's sparkle:version")
           check(info.get("SUPublicEDKey") == key, "Info.plist SUPublicEDKey is the pinned key")
           check(info.get("SUFeedURL") == feed, f"Info.plist SUFeedURL is {feed}")
-          check("Snappy.app/Contents/_CodeSignature/CodeResources" in names, "the app carries its code signature")
-          check("Snappy.app/Contents/CodeResources" in names, "the app carries a stapled notarization ticket")
+          cs = "Snappy.app/Contents"
+          check(f"{cs}/_CodeSignature/CodeResources" in names, "the app carries its code signature")
+          check(f"{cs}/CodeResources" in names, "the app carries a stapled notarization ticket")
 
-          # Every older item stays installable: its archive still answers.
           for other in items:
               link = other.find("enclosure").get("url")
               try:
-                  with urllib.request.urlopen(urllib.request.Request(link, method="HEAD"), timeout=30) as answer:
-                      check(answer.status == 200, f"{link} answers 200")
+                  req = urllib.request.Request(link, method="HEAD")
+                  with urllib.request.urlopen(req, timeout=30) as ans:
+                      check(ans.status == 200, f"{link} answers 200")
               except OSError as why:
                   check(False, f"{link} answers 200 ({why})")
 
@@ -147,7 +138,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      issues: write # opens or comments on the alert issue
+      issues: write # Open or update operator alert issue on failure.
     steps:
       - name: Open or update the alert issue
         env:

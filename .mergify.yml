@@ -1,23 +1,11 @@
-# Landing queue for roboulos/snappy-releases: Mergify, the same setup as snappy-lanes' (and snappy-rust's and snappy-kernel's).
-# Require `snappy-releases-gate`: the check .github/workflows/snappy-releases-gate.yml runs (release files only, actionlint,
-# zizmor, bash -n, ShellCheck, shfmt, gitleaks, mergify config validate, the STE100 linter: published tools at exact pins) on a
-# pull request's head and on Mergify's merge-queue draft pull requests. Every run must have passed (none failed, none pending).
-# Require `release-check` too (.github/workflows/release-check.yml, every pull request): nothing lands while what this
-# repository serves to users fails its check (roboulos/snappy-lanes#170).
-# Require `handroll-review` too (.github/workflows/handroll-review.yml): the full-tree hand-roll check every Snappy
-# repository holds. A hand-written protocol, a skip marker or a new exemption does not land.
-# Require `release-gate` too (.github/workflows/release-gate.yml, every pull request): the latest release passes its Mac
-# signature check and live smoke, and the two planted archives are refused (roboulos/snappy-releases#11).
-# A pull request queues when it is ready, every required check is green and it is not held (label hold): no label is needed. A pull
-# request labelled `now` goes to the front and may interrupt a lower priority check. A pull request labelled `self-heal`
-# also goes to the front at high priority. A pull request to main names its issue with `Refs #N` only. A closing keyword
-# (Closes, Fixes or Resolves #N) closes the issue at merge, before the release is checked live (roboulos/snappy-releases#13).
+# Landing queue for roboulos/snappy-releases: Mergify, same setup as snappy-lanes'.
+# Required checks: snappy-releases-gate, release-check, handroll-review, release-gate.
+# A pull request to main names its issue with Refs #N only (no closing keyword).
 queue_rules:
   - name: default
     queue_conditions: &queue-and-merge
       - base=main
       - -draft
-      # The required checks, written once (a YAML anchor) and named again for merge_conditions below.
       - and: &required-checks
           - check-success=snappy-releases-gate
           - -check-failure=snappy-releases-gate
@@ -34,14 +22,11 @@ queue_rules:
       - -label=hold
     merge_conditions: *queue-and-merge
     merge_method: fast-forward
-    # The squash commit on main reads the pull request's own title and body, never its first commit's message.
     commit_message_format:
       title: pr-title
       body: pr-body
     update_method: merge
-    # A draft whose runner dies must not wait forever (snappy-lanes: 45 m, about 3x its slowest green queue check).
     checks_timeout: 45 m
-    # Up to 4 pull requests share one speculative check. The queue starts earlier if the wait expires.
     batch_size: 4
     max_checks_retries: 0
 
@@ -72,8 +57,6 @@ pull_request_rules:
       queue:
         name: default
 
-  # A pull request the queue cannot take must not sit unseen. The label toggles: it goes on while the condition holds and
-  # comes off by itself once it is fixed. The same rules as snappy-lanes'.
   - name: flag a pull request that conflicts with main
     conditions:
       - base=main
@@ -85,8 +68,10 @@ pull_request_rules:
           - conflict
       comment:
         message: >-
-          This pull request conflicts with main, so the merge queue cannot take it. Merge origin/main into the branch
-          (a merge, never a rebase), resolve, and push; the queue takes it once `snappy-releases-gate`, `release-check`, `handroll-review` and `release-gate` are green.
+          This pull request conflicts with main, so the merge queue cannot take it.
+          Merge origin/main into the branch (a merge, never a rebase), resolve, and
+          push. The queue takes it once `snappy-releases-gate`, `release-check`,
+          `handroll-review` and `release-gate` are green.
 
   - name: flag a pull request whose gate is red
     conditions:
@@ -104,19 +89,12 @@ pull_request_rules:
           - gate-red
 
 merge_queue:
-  # A later batch pass stands in for an earlier batch tested on top of it when every scope in between was tested.
   skip_intermediate_results: true
-  # Speculative checks stay in one train. Six of them can run at once.
   mode: serial
   max_parallel_checks: 6
-  # A pull request the queue drops gets this label (the Mergify default, named here). The label comes off when it queues again.
   dequeued_label: dequeued
 
-# Scopes from changed files, named for the checks this repository runs on a pull request.
-# `snappy-releases-gate` is that workflow, the commit hook, the tool pins and the ShellCheck config.
-# `release-check` is the published-release digest workflow. `handroll-review` is the full-tree hand-roll workflow.
-# `release-gate` is the Mac promotion workflow. `docs` is the prose. `core` is every other file, so every file has a lane.
-# The queue config, a workflow, a hook, the tool pins or the ShellCheck config holds every scope until it lands.
+# Scopes from changed files, named for the checks this repository runs on a PR.
 scopes:
   source:
     files:
@@ -135,6 +113,9 @@ scopes:
       release-gate:
         include:
           - .github/workflows/release-gate.yml
+      release-promote:
+        include:
+          - .github/workflows/release-promote.yml
       docs:
         include:
           - "*.md"
@@ -167,16 +148,14 @@ merge_protections:
     if:
       - base=main
     success_conditions:
-      - -title~=(?i)^(tmp|wip|throwaway|do not merge)
+      - '-title~=(?i)^(tmp|wip|throwaway|do not merge)'
   - name: a major dependency bump needs a yes
     if:
       - author=dependabot[bot]
       - dependabot-update-type=version-update:semver-major
     success_conditions:
       - label=major-ok
-  # Dependabot has no issue number, so it is exempt. Any other pull request to main names its issue with Refs #N and has no
-  # GitHub closing keyword in its title or body: the squash commit is that title and body. snappy-releases-gate checks the
-  # commits with the same grammar. This rule reads the body live, so an edit after the gate ran cannot add a keyword.
+  # Dependabot has no issue number, so it is exempt.
   - name: the pull request names its issue with Refs only
     if:
       - base=main
@@ -185,5 +164,7 @@ merge_protections:
       - or:
           - "body~=Refs #[0-9]+"
           - "title~=Refs #[0-9]+"
-      - '-body~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*(?:(?:[\w.-]+/[\w.-]+)?#[0-9]+|https://github\.com/[\w.-]+/[\w.-]+/issues/[0-9]+)'
-      - '-title~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*(?:(?:[\w.-]+/[\w.-]+)?#[0-9]+|https://github\.com/[\w.-]+/[\w.-]+/issues/[0-9]+)'
+      - '-body~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*(?:[\w.-]+/[\w.-]+)?#[0-9]+'
+      - '-body~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*https?://\S+/issues/\d+'
+      - '-title~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*(?:[\w.-]+/[\w.-]+)?#[0-9]+'
+      - '-title~=(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s*https?://\S+/issues/\d+'

@@ -1,9 +1,7 @@
 name: handroll-review
-# The full-tree hand-roll check of roboulos/snappy-lanes' .github/workflows/handroll-review.yml: every tracked source file
-# of HEAD against fixed detectors, no marker and no new answer. This repository is public, and GitHub does not let a public
-# repository call a private repository's workflow, so the step "Full-tree hand-roll check" is held here, its text
-# unchanged: change it in snappy-lanes first, then copy it. Jev's review of added lines does not run here: it needs a key
-# that a GitHub-hosted runner does not have, and no secret is added to a public repository for it.
+# Full-tree hand-roll check: every tracked source file of HEAD against fixed detectors,
+# no marker and no new answer. Held here because GitHub does not let a public repository
+# call a private repository's workflow.
 on:
   push:
     branches: [main]
@@ -18,8 +16,10 @@ permissions:
 jobs:
   handroll-review:
     name: handroll-review
-    # Ready pull requests, and the draft pull requests Mergify opens on its queue branches to test the merged result.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false || startsWith(github.head_ref, 'mergify/merge-queue/')
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.draft == false
+      || startsWith(github.head_ref, 'mergify/merge-queue/')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -35,110 +35,135 @@ jobs:
           enable-cache: false
       - name: Full-tree hand-roll check
         env:
-          # The pull request's base; empty on a push or a dispatch, where no answer can be new.
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           uv run --quiet --no-project --python '>=3.11' python -I - <<'PY'
-          """Full-tree hand-roll check of HEAD. A line a detector matches is a finding, and so is any marker that asks to be
-          skipped. On a pull request a new or changed [[answer]] is a finding. On every run, an answer that claims nothing
-          is published for a model catalog, HTTP, MIME, MCP, MCP Apps or ACP is a finding."""
-
-          import os
-          import re
-          import subprocess
-          import sys
-          import tomllib
+          import os, re, subprocess, sys, tomllib
           from pathlib import Path
 
-          SOURCES = re.compile(r"\.(rs|swift|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|sh)$|^\.github/workflows/[^/]+\.ya?ml$|^\.githooks/")
+          SOURCES = re.compile(
+              r"\.(rs|swift|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|sh)$"
+              r"|^\.github/workflows/[^/]+\.ya?ml$|^\.githooks/")
           THIRD_PARTY = re.compile(r"(^|/)(vendor|node_modules|dist|\.build)/|\.min\.js$")
-          TEST = re.compile(r"(^|/)(tests?|__tests__|fixtures?|Tests|spec|e2e|conformance|proof)(/|$)|_test\.|\.test\.|\.spec\.|tests\.rs$|Tests?\.swift$|(^|/)test_[^/]*\.py$|fake[^/]*\.rs$|Fixture|Mock")
-          # The only files not read: the ones that define these detectors, or plant faults to prove them, per repository.
+          TEST = re.compile(
+              r"(^|/)(tests?|__tests__|fixtures?|Tests|spec|e2e|conformance|proof)(/|$)"
+              r"|_test\.|\.test\.|\.spec\.|tests\.rs$|Tests?\.swift$"
+              r"|(^|/)test_[^/]*\.py$|fake[^/]*\.rs$|Fixture|Mock")
           GATE = {
-              "roboulos/snappy-lanes": r"^\.github/workflows/handroll-review\.yml$|^tests/handroll-tree\.sh$",
+              "roboulos/snappy-lanes": r"^\.github/workflows/handroll-review\.yml$"
+                  r"|^tests/handroll-tree\.sh$",
               "roboulos/snappy-releases": r"^\.github/workflows/handroll-review\.yml$",
               "roboulos/snappy-rust": r"^crates/gate-handroll/|^crates/gate-finding/src/lib\.rs$",
           }
           MARKER = "handroll-ok:"
-          AGENT = r"""["'](?:claude|codex|gemini|grok|antigravity|pi|opencode)(?:-acp|-agent-acp)?["']"""
-          # (rule, pattern, whether a test file may hold it)
+          AGENT = (r"""["'](?:claude|codex|gemini|grok|antigravity|pi|opencode)"""
+                   r"""(?:-acp|-agent-acp)?["']""")
           DETECTORS = [
-              ("jsonrpc", r"""\\?["']jsonrpc\\?["']\s*:\s*\\?["']2\.0|"jsonrpc"\s*,\s*"2\.0"|jsonrpc:\s*["']2\.0""", False),
-              ("mcp-call", r"""method["']?\s*[:=,]\s*["'](tools/(list|call)|resources/(list|read)|prompts/(list|get)|initialize|skills/(list|get))["']""", True),
-              ("acp-call", r"""method["']?\s*[:=,]\s*["']session/(update|prompt|new|load|cancel|request_permission)["']|["']sessionUpdate["']\s*:""", True),
-              ("oauth", r"""code_challenge(_method)?\s*["']?\s*[:=,]|/\.well-known/oauth-(authorization-server|protected-resource)["']|registration_endpoint["']?\s*[:=]""", True),
-              ("frontmatter-parse", r"""split\(\s*["']---["']|startsWith\(\s*["']---["']\)|starts_with\(\s*"---"\)|hasPrefix\("---"\)|/\^---\\n|r"\^---|\(\?s\)\^---""", True),
-              ("sse-parse", r"""\b(line|l|chunk|event|row|frame|raw_line|text_line|s)\??\.(startsWith|starts_with|strip_prefix|hasPrefix)\(\s*["']data:\s?["']\)""", True),
-              ("realtime", r"""type["']?\s*[:=,]\s*["'](session\.update|response\.create|input_audio_buffer\.[a-z_]+|conversation\.item\.create)["']""", True),
-              ("http-by-hand", r""""(GET|POST|PUT|DELETE|PATCH) /[^"]*HTTP/1\.1|"HTTP/1\.1 \d{3}|\\r\\n\\r\\n|fn unchunk""", False),
+              ("jsonrpc",
+               r"""\\?["']jsonrpc\\?["']\s*:\s*\\?["']2\.0|"jsonrpc"\s*,\s*"2\.0"""
+               r"""|jsonrpc:\s*["']2\.0""", False),
+              ("mcp-call",
+               r"""method["']?\s*[:=,]\s*["'](tools/(list|call)|resources/(list|read)"""
+               r"""|prompts/(list|get)|initialize|skills/(list|get))["']""", True),
+              ("acp-call",
+               r"""method["']?\s*[:=,]\s*["']session/(update|prompt|new|load|cancel"""
+               r"""|request_permission)["']|["']sessionUpdate["']\s*:""", True),
+              ("oauth",
+               r"""code_challenge(_method)?\s*["']?\s*[:=,]"""
+               r"""|/\.well-known/oauth-(authorization-server|protected-resource)["']"""
+               r"""|registration_endpoint["']?\s*[:=]""", True),
+              ("frontmatter-parse",
+               r"""split\(\s*["']---["']|startsWith\(\s*["']---["']\)"""
+               r"""|starts_with\(\s*"---"\)|hasPrefix\("---"\)|/\^---\\n|r"\^---|\(\?s\)\^---""",
+               True),
+              ("sse-parse",
+               r"""\b(line|l|chunk|event|row|frame|raw_line|text_line|s)\??\."""
+               r"""(startsWith|starts_with|strip_prefix|hasPrefix)\(\s*["']data:\s?["']\)""",
+               True),
+              ("realtime",
+               r"""type["']?\s*[:=,]\s*["'](session\.update|response\.create"""
+               r"""|input_audio_buffer\.[a-z_]+|conversation\.item\.create)["']""", True),
+              ("http-by-hand",
+               r""""(GET|POST|PUT|DELETE|PATCH) /[^"]*HTTP/1\.1|"HTTP/1\.1 \d{3}"""
+               r"""|\\r\\n\\r\\n|fn unchunk""", False),
               ("json-by-format", r"""format!\(\s*"\{\{\\""", False),
-              ("markdown-parse", r"""(startsWith|starts_with|hasPrefix)\(\s*["'](#{1,6} |```|\* |- )["']\)""", True),
-              ("bridge-by-hand", r"""postMessage\(\s*\{\s*jsonrpc|jsonrpc:\s*JSONRPC|["'](ui/initialize|ui/notifications/[a-z-]+)["']""", False),
-              ("jsonrpc-by-value", r"""\.get\(\s*"(method|jsonrpc)"\s*\)|\.get\(\s*"params"\s*\)\s*\.and_then|\["method"\]\s*==""", False),
-              ("hardcoded-model-pricing", r"""(input_cost|output_cost|cost_per_m|pricing\.json|claude-opus-4-5.*25\.0|claude-haiku-4-5.*keyEnv)""", True),
-              # An option checked against the agent's list by hand, or a branch on a harness's name.
-              ("shadow-option-validator", rf"""\bvalues(\(\))?\.iter\(\)\.any\(\s*\|[^|]*\|[^;{{]*==\s*[&*]*ask\b|(==|!=)=?\s*(Some\(\s*)?{AGENT}|{AGENT}\s*\)?\s*(==|!=|=>)|\bcase\s+{AGENT}""", True),
+              ("markdown-parse",
+               r"""(startsWith|starts_with|hasPrefix)\(\s*["'](#{1,6} |```|\* |- )["']\)""",
+               True),
+              ("bridge-by-hand",
+               r"""postMessage\(\s*\{\s*jsonrpc|jsonrpc:\s*JSONRPC"""
+               r"""|["'](ui/initialize|ui/notifications/[a-z-]+)["']""", False),
+              ("jsonrpc-by-value",
+               r"""\.get\(\s*"(method|jsonrpc)"\s*\)|\.get\(\s*"params"\s*\)\s*\.and_then"""
+               r"""|\["method"\]\s*==""", False),
+              ("hardcoded-model-pricing",
+               r"""(input_cost|output_cost|cost_per_m|pricing\.json"""
+               r"""|claude-opus-4-5.*25\.0|claude-haiku-4-5.*keyEnv)""", True),
+              ("shadow-option-validator",
+               r"""\bvalues(\(\))?\.iter\(\)\.any\(\s*\|[^|]*\|[^;{]*==\s*[&*]*ask\b"""
+               r"""|(==|!=)=?\s*(Some\(\s*)?""" + AGENT + r"""|""" + AGENT
+               + r"""\s*\)?\s*(==|!=|=>)|\bcase\s+""" + AGENT, True),
           ]
-
           ANSWERS = ".snappy/handroll-answers.toml"
           CLAIM = re.compile(r"no[- ]published", re.IGNORECASE)
           PUBLISHED = {
               "model catalog (models.dev)": r"models\.dev|model[-_ ]?(catalog|pric)",
               "HTTP (hyper, swift-nio)": r"(?<![a-z])http(?![a-z]|s?://)|swift-nio|(?<![a-z])hyper(?![a-z])",
               "MIME (mimetext, nodemailer)": r"(?<![a-z])mime(?![a-z])|mimetext|nodemailer",
-              "MCP Apps (@modelcontextprotocol/ext-apps)": r"mcp[-_ ]?apps|ext-apps|ui://",
-              "MCP (rmcp, @modelcontextprotocol/sdk)": r"(?<![a-z])(r|web)?mcp(?![a-z]|[-_ ]?apps)|modelcontextprotocol",
+              "MCP Apps (ext-apps)": r"mcp[-_ ]?apps|ext-apps|ui://",
+              "MCP (rmcp, sdk)": r"(?<![a-z])(r|web)?mcp(?![a-z]|[-_ ]?apps)|modelcontextprotocol",
               "ACP (agent-client-protocol)": r"(?<![a-z])acp(?![a-z])|agent[-_ ]client[-_ ]protocol",
           }
-
 
           def git(*args: str) -> str:
               return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
-
           def tree() -> list[str]:
               found = []
               exempt = GATE.get(os.environ.get("GITHUB_REPOSITORY", ""))
-              rules = [(rule, re.compile(pattern), in_tests) for rule, pattern, in_tests in DETECTORS]
+              rules = [(rule, re.compile(pat), ok) for rule, pat, ok in DETECTORS]
               for name in filter(None, git("ls-files", "-z").split("\0")):
                   path = Path(name)
-                  if not SOURCES.search(name) or (exempt and re.search(exempt, name)) or path.is_symlink() or not path.is_file():
+                  if (not SOURCES.search(name) or (exempt and re.search(exempt, name))
+                          or path.is_symlink() or not path.is_file()):
                       continue
-                  is_test, third_party = bool(TEST.search(name)), bool(THIRD_PARTY.search(name))
+                  is_test = bool(TEST.search(name))
+                  third = bool(THIRD_PARTY.search(name))
                   for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
                       hits = ["skip-marker"] if MARKER in line else []
-                      if not third_party:
-                          hits += [rule for rule, pattern, in_tests in rules if not (is_test and in_tests) and pattern.search(line)]
-                      found += [f"{name}:{number}\t{rule}\t{line.strip()[:120]}" for rule in hits]
+                      if not third:
+                          hits += [r for r, p, ok in rules if not (is_test and ok) and p.search(line)]
+                      found += [f"{name}:{number}\t{r}\t{line.strip()[:120]}" for r in hits]
               return found
-
 
           def entries(text: str) -> list[dict]:
               return tomllib.loads(text).get("answer", [])
-
 
           def answers(base: str) -> list[str]:
               kept = entries(Path(ANSWERS).read_text()) if Path(ANSWERS).exists() else []
               found = []
               if base:
                   fork = git("merge-base", base, "HEAD").strip()
-                  before = entries(git("show", f"{fork}:{ANSWERS}")) if git("ls-tree", "--name-only", fork, "--", ANSWERS) else []
-                  found += [f"{ANSWERS}\tnew-or-changed-answer\t{entry.get('file')}" for entry in kept if entry not in before]
+                  old_tree = git("ls-tree", "--name-only", fork, "--", ANSWERS)
+                  before = entries(git("show", f"{fork}:{ANSWERS}")) if old_tree else []
+                  found += [f"{ANSWERS}\tnew-or-changed-answer\t{e.get('file')}"
+                            for e in kept if e not in before]
               for entry in kept:
                   verdict = str(entry.get("verdict", ""))
                   if not CLAIM.search(verdict):
                       continue
-                  about = " ".join(str(entry.get(key, "")) for key in ("file", "finding", "verdict")).lower()
-                  found += [f"{ANSWERS}\tpublished-exists: {what}\t{entry.get('file')}\t{verdict[:80]}" for what, pattern in PUBLISHED.items() if re.search(pattern, about)]
+                  about = " ".join(str(entry.get(k, "")) for k in ("file", "finding", "verdict")).lower()
+                  found += [f"{ANSWERS}\tpublished-exists: {what}\t{entry.get('file')}\t{verdict[:80]}"
+                            for what, pat in PUBLISHED.items() if re.search(pat, about)]
               return found
 
-
           findings = tree() + answers(os.environ.get("BASE", ""))
-          for finding in findings:
-              print(f"handroll\t{finding}")
+          for f in findings:
+              print(f"handroll\t{f}")
           print(f"handroll\ttree total\t{len(findings)} findings")
           if findings:
-              print("Delete the hand-written code and call the published SDK. No marker and no answer closes a finding.")
+              print("Delete the hand-written code and call the published SDK."
+                    " No marker and no answer closes a finding.")
           sys.exit(1 if findings else 0)
           PY

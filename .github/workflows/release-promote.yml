@@ -1,0 +1,196 @@
+name: release-promote
+# Atomic promote with Ed25519/SHA-256 verification,
+# health check, and rollback.
+on:
+  release:
+    types: [prereleased]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Pre-release tag (e.g. v1.2.3)
+        required: true
+        type: string
+      rollback:
+        description: Roll back this tag
+        required: false
+        type: boolean
+        default: false
+concurrency:
+  group: release-promote
+  cancel-in-progress: false
+permissions: {}
+env:
+  REPO: ${{ github.repository }}
+jobs:
+  promote:
+    name: promote
+    if: >-
+      github.event_name == 'release'
+      || (github.event_name == 'workflow_dispatch'
+      && !inputs.rollback)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # Update GitHub release latest/prerelease state.
+      actions: write # Dispatch post-promotion release-check workflow.
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+      prev: ${{ steps.verify.outputs.prev }}
+    steps:
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: 0.13.9
+          checksum: a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
+          enable-cache: false
+      - name: Verify Ed25519 and SHA-256
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASKED: ${{ inputs.tag || github.event.release.tag_name }}
+          ED25519_VERIFY_PUB: ReJxRjP2wnAv9vOzLPn7RAldkN9osfdLUxc0msqdDXA=
+        run: |
+          set -euo pipefail
+          tag="${ASKED}"
+          if [[ -z ${tag} ]]; then
+            tag=$(gh api "repos/${REPO}/releases" \
+              --jq '[.[] | select(.prerelease)]
+              | sort_by(.created_at)
+              | last | .tag_name')
+          fi
+          re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          [[ ${tag} =~ ${re} ]] || { echo "bad tag: ${tag}" >&2; exit 1; }
+          version="${tag#v}"
+          pre=$(gh release view "${tag}" \
+            -R "${REPO}" --json isPrerelease \
+            --jq .isPrerelease)
+          [[ ${pre} == true ]] || { echo "${tag}: not a pre-release"; exit 0; }
+          work="${RUNNER_TEMP}/promote"
+          mkdir -p "${work}"
+          name="Snappy-${version}.zip"
+          gh release download "${tag}" \
+            -R "${REPO}" -p "${name}" \
+            -p "${name}.sha256" \
+            -p appcast.xml -D "${work}"
+          cd "${work}"
+          sha256sum -c "${name}.sha256"
+          export VERSION="${version}"
+          uv run --quiet --no-project \
+            --with 'cryptography==50.0.2' \
+            python -I - <<'PY'
+          import base64, os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          from cryptography.hazmat.primitives\
+          .asymmetric.ed25519 import Ed25519PublicKey
+
+          NS = "{http://www.andymatuschak.org"\
+          "/xml-namespaces/sparkle}"
+          key = os.environ["ED25519_VERIFY_PUB"]
+          ver = os.environ["VERSION"]
+          items = ET.parse("appcast.xml").findall(
+              "channel/item")
+          match = [i for i in items if i.findtext(
+              f"{NS}shortVersionString") == ver]
+          assert len(match) == 1
+          enc = match[0].find("enclosure")
+          sig = base64.b64decode(
+              enc.get(f"{NS}edSignature", ""))
+          archive = Path(
+              f"Snappy-{ver}.zip").read_bytes()
+          Ed25519PublicKey.from_public_bytes(
+              base64.b64decode(key)
+          ).verify(sig, archive)
+          print(f"Ed25519 verified for {ver}")
+          PY
+          prev=$(gh release view -R "${REPO}" \
+            --json tagName --jq .tagName \
+            2>/dev/null || echo "")
+          if [[ -n ${prev} ]]; then
+            newest=$(printf '%s\n' \
+              "${prev}" "${tag}" \
+              | sort -V | tail -n 1)
+            [[ ${newest} == "${tag}" ]] || {
+              echo "${tag} < ${prev}" >&2
+              exit 1
+            }
+          fi
+          printf 'tag=%s\nprev=%s\n' \
+            "${tag}" "${prev}" \
+            >> "${GITHUB_OUTPUT}"
+      - name: Promote to latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ -n ${TAG} ]] || exit 0
+          gh release edit "${TAG}" -R "${REPO}" \
+            --prerelease=false --latest
+      - name: Post-promote health check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ -n ${TAG} ]] || exit 0
+          url="https://github.com/${REPO}"
+          url+="/releases/latest/download/Snappy.zip"
+          code=$(curl -sS -L --retry 3 \
+            -o /dev/null -w '%{http_code}' "${url}")
+          [[ ${code} == 200 ]] || { echo "download: HTTP ${code}" >&2; exit 1; }
+          gh workflow run release-check.yml \
+            -R "${REPO}" --ref main
+  rollback:
+    name: rollback
+    needs: promote
+    permissions:
+      contents: write # Update GitHub release latest/prerelease state.
+    if: >-
+      always() && (failure()
+      || (github.event_name == 'workflow_dispatch'
+      && inputs.rollback))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Roll back the failed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: >-
+            ${{ needs.promote.outputs.tag
+            || inputs.tag }}
+          PREV: >-
+            ${{ needs.promote.outputs.prev }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${TAG:-}" ]]; then
+            gh release edit "${TAG}" -R "${REPO}" --prerelease --latest=false
+          fi
+          if [[ -n "${PREV:-}" ]]; then
+            gh release edit "${PREV}" -R "${REPO}" --prerelease=false --latest
+          fi
+  alert:
+    name: alert
+    needs: [promote, rollback]
+    permissions:
+      issues: write # Open or update operator alert issue on failure.
+    if: always() && failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          TAG: >-
+            ${{ needs.promote.outputs.tag
+            || inputs.tag }}
+          RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${REPO}/actions/runs/${RUN}"
+          title="release-promote failed: ${TAG:-unknown} needs a person"
+          body="@${OWNER} release-promote failed. Run: ${url}"
+          gh issue create -R "${REPO}" \
+            --assignee "${OWNER}" \
+            --title "${title}" \
+            --body "${body}"

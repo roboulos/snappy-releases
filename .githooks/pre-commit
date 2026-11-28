@@ -34,13 +34,22 @@ root="$(git rev-parse --show-toplevel)"
 cd "${root}" || die "cannot enter ${root}"
 
 ste_sha="66c454b94dea0f81334f36b222775b62b6ec24e25c0e62308f23c550ef3eaa3d"
-ste_url="https://raw.githubusercontent.com/danyuchn/asd-ste100-skill/65c8ab6ef5fcb3619c8e6daca43e68627f3d7b4a/scripts/ste-lint.py"
+ste_url="https://raw.githubusercontent.com"
+ste_url+="/danyuchn/asd-ste100-skill"
+ste_url+="/65c8ab6ef5fcb3619c8e6daca43e68627f3d7b4a"
+ste_url+="/scripts/ste-lint.py"
 ste_cache="${XDG_CACHE_HOME:-${HOME}/.cache}/snappy-releases/ste-lint.py"
 ste_known="${HOME}/.cache/ste-lint/65c8ab6ef5fcb3619c8e6daca43e68627f3d7b4a/ste-lint.py"
 
 ste_match() {
 	[[ -f "$1" ]] || return 1
-	python3 -c 'import hashlib,sys; p=sys.argv[1]; d=open(p,"rb").read(); raise SystemExit(0 if hashlib.sha256(d).hexdigest()==sys.argv[2] else 1)' "$1" "${ste_sha}"
+	python3 -c '
+import hashlib, sys
+p = sys.argv[1]
+d = open(p, "rb").read()
+h = hashlib.sha256(d).hexdigest()
+raise SystemExit(0 if h == sys.argv[2] else 1)
+' "$1" "${ste_sha}"
 }
 
 pick_ste() {
@@ -110,7 +119,9 @@ mergify config validate -f .mergify.yml >"${stamp_dir}/mergify.out" 2>"${stamp_d
 pid_mergify=$!
 shfmt -d "${shell_files[@]}" >"${stamp_dir}/shfmt.out" 2>"${stamp_dir}/shfmt.err" &
 pid_shfmt=$!
-shellcheck --enable=all -x "${shell_files[@]}" >"${stamp_dir}/shellcheck.out" 2>"${stamp_dir}/shellcheck.err" &
+shellcheck --enable=all -x "${shell_files[@]}" \
+	>"${stamp_dir}/shellcheck.out" \
+	2>"${stamp_dir}/shellcheck.err" &
 pid_shellcheck=$!
 actionlint -color >"${stamp_dir}/actionlint.out" 2>"${stamp_dir}/actionlint.err" &
 pid_actionlint=$!
@@ -173,12 +184,17 @@ start=float(open(sys.argv[1]).read())
 end=float(open(sys.argv[2]).read())
 elapsed=end-start
 sys.stderr.write("five checks: %.3fs\n" % elapsed)
-raise SystemExit(0 if elapsed < 2 else 1)' "${stamp_dir}/start" "${stamp_dir}/end" || die "the five checks took 2 seconds or more"
+raise SystemExit(0 if elapsed < 2 else 1)' \
+	"${stamp_dir}/start" "${stamp_dir}/end" ||
+	die "the five checks took 2 seconds or more"
 
 rm -rf "${stamp_dir}"
 trap - EXIT
 
 if command -v pre-commit >/dev/null 2>&1; then
 	here="$(cd "$(dirname "$0")" && pwd)"
-	exec pre-commit hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit --hook-dir "${here}" -- "$@"
+	exec pre-commit hook-impl \
+		--config=.pre-commit-config.yaml \
+		--hook-type=pre-commit \
+		--hook-dir "${here}" -- "$@"
 fi
