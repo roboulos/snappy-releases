@@ -1,7 +1,8 @@
 name: snappy-releases-gate
 # The gate of roboulos/snappy-releases: the checks snappy-lanes-gate runs (actionlint, zizmor, bash -n, ShellCheck, shfmt,
 # gitleaks, mergify config validate) at the same pins, zizmor at snappy-swift's threshold (scripts/gate/workflows.sh G-40:
-# pedantic, no config file, no ignore comments), the STE100 linter on every Markdown file, and the repository rules below.
+# pedantic, no config file, no ignore comments), the STE100 linter on every Markdown file, the repository rules below, and
+# a pull request names its issue with Refs #N only (no closing keyword in its title, body or commits).
 # uv comes from astral-sh/setup-uv. The other tools publish no action that runs the same check, so each is its GitHub
 # release asset at an exact version, checked against the SHA-256 GitHub publishes for it before it runs. The versions are
 # set once, in env below, and must equal the revs .pre-commit-config.yaml pins (the "Repository rules" step checks it).
@@ -109,6 +110,38 @@ jobs:
             fi
           done
           grep -Fq "mergify-cli==${MERGIFY_CLI}" .pre-commit-config.yaml || { echo ".pre-commit-config.yaml does not pin mergify-cli==${MERGIFY_CLI}" >&2; status=1; }
+          exit "${status}"
+      - name: Refs #N only (no GitHub closing keyword in the title, body or commits)
+        # GitHub closes an issue when a pull request whose title, body or commit names it with a closing keyword merges.
+        # That is before the release is built, notarized and checked live on a Mac (roboulos/snappy-releases#13).
+        # The grammar is GitHub's: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, then #N,
+        # owner/repo#N or an issue URL. Mergify's merge queue drafts carry its own body and the commits already checked
+        # here. Dependabot names upstream issues only. The "Refs only" merge protection in .mergify.yml re-reads an edited body.
+        if: >-
+          github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/') &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          name='[[:alnum:]_.-]+'
+          keyword="\\b(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*((${name}/${name})?#[0-9]+|https://github[.]com/${name}/${name}/issues/[0-9]+)"
+          status=0
+          if hits=$(printf '%s\n%s\n' "${PR_TITLE}" "${PR_BODY}" | grep -Eio -- "${keyword}"); then
+            printf 'pull request title or body:\n%s\n' "${hits}" >&2
+            status=1
+          fi
+          mapfile -t commits < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          for commit in "${commits[@]}"; do
+            if hits=$(git log -1 --format=%B "${commit}" | grep -Eio -- "${keyword}"); then
+              printf 'commit %s:\n%s\n' "${commit}" "${hits}" >&2
+              status=1
+            fi
+          done
+          ((status == 0)) || echo 'Use Refs #N instead of Closes, Fixes or Resolves #N: an issue closes once its release is checked live.' >&2
           exit "${status}"
       - name: The commit hook's hand-roll check passes this tree (.pre-commit-config.yaml)
         run: uv tool run --from pre-commit==4.7.0 pre-commit run handroll-tree --all-files
