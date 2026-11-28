@@ -28,4 +28,5 @@ Each release ships the notarized `Snappy-<version>.zip`, `Snappy.zip`, `Snappy-<
 
 - Zero `/run/lock/snappy-heavy` or `flock` on `hz1`–`hz5`, zero cross-folder `lockf` on `Mac mini`, and zero `cargo` or `swift build` on `MacBook Pro` (`~/.claude/bin/snappy-preview-iter.sh` + `mac_look` runs the `<35s` UI loop).
 - Use standard industry terms (`CI checks`, `merge and deploy`, `deployed version`, `server`, `runner service`, `agent session` or `branch`, `MCP App UI`, `read-only API call`, `build environment`).
+- `snappy-releases-gate` fails a pull request when its title, body, or a commit holds a GitHub closing keyword (`Closes #N`, `Fixes #N`, or `Resolves #N`). The Mergify rule `the pull request names its issue with Refs only` checks the live title and body again before merge.
 - Every Markdown file passes `ste-lint.py` (`ASD-STE100`: zero semicolons, sentences of 25 words or fewer) and `jscpd --threshold 0`. Use neutral synthetic names (`Ada`, `Ben`, `example.test`), write `Refs #N` only (never `Closes`, `Fixes`, or `Resolves`), and add `--label now` on ready PRs.
