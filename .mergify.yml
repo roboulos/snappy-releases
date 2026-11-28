@@ -42,7 +42,10 @@ queue_rules:
     checks_timeout: 45 m
     # Up to 4 pull requests share one speculative check. The queue starts earlier if the wait expires.
     batch_size: 4
-    max_checks_retries: 0
+    # A red queue check is run again once on a new draft before the pull request leaves the queue. Mergify has no
+    # `retry_rules` key (its schema refuses it). This is its retry. `release-check` and `release-gate` read the live
+    # release over the network, so one failed download does not dequeue a good batch. A real fault fails both runs.
+    max_checks_retries: 1
 
 priority_rules:
   - name: fix-main
