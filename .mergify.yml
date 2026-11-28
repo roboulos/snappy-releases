@@ -9,7 +9,8 @@
 # Require `release-gate` too (.github/workflows/release-gate.yml, every pull request): the latest release passes its Mac
 # signature check and live smoke, and the two planted archives are refused (roboulos/snappy-releases#11).
 # A pull request queues when it is ready, every required check is green and it is not held (label hold): no label is needed. A pull
-# request labelled `now` goes to the front.
+# request labelled `now` goes to the front and may interrupt a lower priority check. A pull request labelled `self-heal`
+# also goes to the front at high priority. A pull request to main names its issue with `Refs #N` or `Fixes #N`.
 queue_rules:
   - name: default
     queue_conditions: &queue-and-merge
@@ -51,6 +52,11 @@ priority_rules:
   - name: now
     conditions:
       - label=now
+    priority: high
+    allow_checks_interruption: true
+  - name: self-heal
+    conditions:
+      - label=self-heal
     priority: high
   - name: dependencies last
     conditions:
@@ -116,3 +122,12 @@ merge_protections:
       - dependabot-update-type=version-update:semver-major
     success_conditions:
       - label=major-ok
+  # Dependabot has no issue number, so it is exempt. Any other pull request to main must name one.
+  - name: the pull request names its issue with Refs or Fixes
+    if:
+      - base=main
+      - -author=dependabot[bot]
+    success_conditions:
+      - or:
+          - "body~=(?:Refs|Fixes) #[0-9]+"
+          - "title~=(?:Refs|Fixes) #[0-9]+"
