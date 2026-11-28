@@ -40,7 +40,8 @@ queue_rules:
     update_method: merge
     # A draft whose runner dies must not wait forever (snappy-lanes: 45 m, about 3x its slowest green queue check).
     checks_timeout: 45 m
-    batch_size: 1
+    # Up to 4 pull requests share one speculative check. The queue starts earlier if the wait expires.
+    batch_size: 4
     max_checks_retries: 0
 
 priority_rules:
@@ -102,9 +103,57 @@ pull_request_rules:
           - gate-red
 
 merge_queue:
-  # In-place serial mode matches main's GitHub branch protection ("Require branches to be up to date before merging").
+  # A later batch pass stands in for an earlier batch tested on top of it when every scope in between was tested.
+  skip_intermediate_results: true
+  # Speculative checks stay in one train. Six of them can run at once.
   mode: serial
-  max_parallel_checks: 1
+  max_parallel_checks: 6
+
+# Scopes from changed files, named for the checks this repository runs on a pull request.
+# `snappy-releases-gate` is that workflow, the commit hook, the tool pins and the ShellCheck config.
+# `release-check` is the published-release digest workflow. `handroll-review` is the full-tree hand-roll workflow.
+# `release-gate` is the Mac promotion workflow. `docs` is the prose. `core` is every other file, so every file has a lane.
+# The queue config, a workflow, a hook, the tool pins or the ShellCheck config holds every scope until it lands.
+scopes:
+  source:
+    files:
+      snappy-releases-gate:
+        include:
+          - .github/workflows/snappy-releases-gate.yml
+          - .githooks/**
+          - .pre-commit-config.yaml
+          - .shellcheckrc
+      release-check:
+        include:
+          - .github/workflows/release-check.yml
+      handroll-review:
+        include:
+          - .github/workflows/handroll-review.yml
+      release-gate:
+        include:
+          - .github/workflows/release-gate.yml
+      docs:
+        include:
+          - "*.md"
+          - "**/*.md"
+      core:
+        include:
+          - "**/*"
+        exclude:
+          - .github/workflows/**
+          - .githooks/**
+          - .pre-commit-config.yaml
+          - .shellcheckrc
+          - "*.md"
+          - "**/*.md"
+          - .mergify.yml
+  barrier_files:
+    include:
+      - .mergify.yml
+      - .github/workflows/**
+      - .githooks/**
+      - .pre-commit-config.yaml
+      - .shellcheckrc
 
 merge_protections_settings:
   auto_merge_conditions: true
